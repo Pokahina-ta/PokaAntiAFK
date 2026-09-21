@@ -14,6 +14,7 @@
         protected override void Dispose(bool disposing)
         {
             if (disposing && timer != null && releaseTimer != null) StopRunning("停止中");
+            if (disposing) { osc?.Dispose(); osc=null; oscHeld=false; }
             if (disposing && (components != null))
             {
                 components.Dispose();

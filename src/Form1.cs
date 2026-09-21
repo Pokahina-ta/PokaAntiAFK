@@ -17,6 +17,13 @@ namespace PokaAntiAFK_WinForms
         private Button toggleButton, refreshButton;
         private Label statusLabel, titleLabel;
         private System.Windows.Forms.Panel cardPanel;
+        private ComboBox transportBox;
+        private NumericUpDown oscPort;
+        private Button testButton;
+        private Label oscHint;
+        private OscInput osc;
+        private bool oscHeld, singleShot, sessionOsc;
+        private bool IsOsc => transportBox.SelectedIndex == 1;
 
         private System.Windows.Forms.Timer timer;
         private System.Windows.Forms.Timer releaseTimer;
@@ -95,13 +102,13 @@ namespace PokaAntiAFK_WinForms
         public Form1()
         {
             InitializeComponent();
-            Text="Poka AntiAFK • 2.1 Preview";
+            Text="Poka AntiAFK • 2.2 OSC Preview";
             using (var iconStream = typeof(Form1).Assembly.GetManifestResourceStream("PokaAntiAFK.AppIcon"))
             using (var appIcon = new Icon(iconStream))
                 Icon = (Icon)appIcon.Clone();
             Font=new Font("Yu Gothic UI",10);
             BackColor=Color.FromArgb(18,20,25);
-            ClientSize=new Size(820,720);
+            ClientSize=new Size(820,790);
             FormBorderStyle=FormBorderStyle.FixedSingle;
             MaximizeBox=false;
             StartPosition=FormStartPosition.CenterScreen;
@@ -110,6 +117,11 @@ namespace PokaAntiAFK_WinForms
             Caption("POKA  /  DESKTOP UTILITY",32,24,600,10,accent);
             titleLabel=Caption("AntiAFK",30,60,600,32,Color.White);
             titleLabel.Height=64;
+            transportBox=Choice(34,132,340,new[]{"ウィンドウ入力（従来方式）","VRChat（OSC）"});
+            Caption("OSC ポート",400,134,120,10,Color.Silver);
+            oscPort=new NumericUpDown { Minimum=1, Maximum=65535, Value=9000,
+                Location=new Point(522,134), Width=112, Font=new Font("Yu Gothic UI",11) };
+            cardPanel.Controls.Add(oscPort);
             Caption("01   対象ウィンドウ",32,186,600,11,accent);
             windowComboBox=Choice(34,226,620,null);
             windowComboBox.DropDownWidth=720;
@@ -145,12 +157,18 @@ namespace PokaAntiAFK_WinForms
             statusLabel=Caption("停止中",278,588,502,12,Color.White);
             statusLabel.Height=64;
             Caption("この画面で Esc を押すと停止  /  対象アプリによっては入力を受け付けません",34,670,752,9,Color.Gray);
+            testButton=ActionButton("前進を0.25秒テスト",34,721,250);
+            testButton.Click+=TestOsc_Click;
+            oscHint=Caption("",304,711,474,10,Color.Silver);
+            oscHint.Height=70;
+            transportBox.SelectedIndexChanged+=(s,e)=>UpdateTransportOptions();
             timer=new System.Windows.Forms.Timer(components);
             timer.Tick+=Timer_Tick;
             releaseTimer=new System.Windows.Forms.Timer(components);
             releaseTimer.Tick+=(s,e)=> {
                 releaseTimer.Stop();
                 if (!ReleaseKey()) { StopRunning("キー解放に失敗しました"); return; }
+                if (singleShot) { StopRunning("テスト送信完了 • VRCで動作を確認"); return; }
                 if (isRunning) { timer.Interval=NextInterval(); timer.Start(); }
             };
             KeyPreview=true;
@@ -158,6 +176,44 @@ namespace PokaAntiAFK_WinForms
             FormClosing+=(s,e)=>StopRunning("停止中");
             RefreshWindowList();
             UpdateRandomizeCheckBoxes();
+            UpdateTransportOptions();
+        }
+        private void UpdateTransportOptions()
+        {
+            bool idle=!isRunning;
+            transportBox.Enabled=idle;
+            windowComboBox.Enabled=refreshButton.Enabled=idle && !IsOsc;
+            modeBox.Enabled=shiftBox.Enabled=ctrlBox.Enabled=spaceBox.Enabled=holdTimeBox.Enabled=idle && !IsOsc;
+            oscPort.Enabled=testButton.Enabled=idle && IsOsc;
+            oscHint.Text=IsOsc ? "VRCで OSC → Enabled を有効にしてください。\n前進0.25秒／AFK判定の抑止は未確認" : "";
+        }
+        private bool PrepareSession(bool test)
+        {
+            sessionOsc=IsOsc;
+            singleShot=test;
+            if (sessionOsc)
+            {
+                osc?.Dispose();
+                osc=null;
+                try { osc=new OscInput((int)oscPort.Value); }
+                catch (System.Net.Sockets.SocketException ex)
+                { statusLabel.Text="OSC初期化失敗 • " + ex.SocketErrorCode; return false; }
+                return true;
+            }
+            activeTarget=GetSelectedWindowHandle();
+            GetWindowThreadProcessId(activeTarget,out activeProcess);
+            if (!TargetExists()) { statusLabel.Text="対象を選び直してください"; return false; }
+            return true;
+        }
+        private void TestOsc_Click(object sender, EventArgs e)
+        {
+            if (isRunning || !IsOsc || oscHeld) return;
+            if (!PrepareSession(true)) return;
+            isRunning=true;
+            SetOptionsEnabled(false);
+            toggleButton.Text="停止する";
+            statusLabel.Text="テスト送信中 • 前進0.25秒";
+            Timer_Tick(sender,e);
         }
         private void RefreshWindowList()
         {
@@ -228,13 +284,12 @@ namespace PokaAntiAFK_WinForms
         private void ToggleButton_Click(object sender, EventArgs e)
         {
             if (isRunning) { StopRunning("停止中"); return; }
-            activeTarget = GetSelectedWindowHandle();
-            GetWindowThreadProcessId(activeTarget, out activeProcess);
-            if (!TargetExists()) { statusLabel.Text = "対象を選び直してください"; return; }
+            if (oscHeld) return;
+            if (!PrepareSession(false)) return;
             isRunning = true;
             SetOptionsEnabled(false);
             toggleButton.Text = "停止する";
-            statusLabel.Text = "実行中 • 対象に定期送信";
+            statusLabel.Text = sessionOsc ? "OSC定期送信中 • 受信は未確認" : "実行中 • 対象に定期送信";
             timer.Interval = NextInterval();
             timer.Start();
         }
@@ -251,6 +306,7 @@ namespace PokaAntiAFK_WinForms
             foreach (Control control in cardPanel.Controls)
                 if (control != toggleButton && !(control is Label)) control.Enabled = enabled;
             if (enabled) UpdateRandomizeCheckBoxes();
+            UpdateTransportOptions();
         }
 
         private bool SendKey(byte key, bool up)
@@ -263,6 +319,11 @@ namespace PokaAntiAFK_WinForms
 
         private bool ReleaseKey()
         {
+            if (oscHeld)
+            {
+                try { osc.Forward(false); oscHeld=false; }
+                catch (System.Net.Sockets.SocketException) { return false; }
+            }
             if (!heldKey.HasValue) return true;
             if (!TargetExists()) { heldKey = null; return true; }
             if (!SendKey(heldKey.Value, true)) return false;
@@ -276,10 +337,12 @@ namespace PokaAntiAFK_WinForms
             timer.Stop();
             releaseTimer.Stop();
             bool released = ReleaseKey();
+            singleShot=false;
             toggleButton.Text = "開始する";
             SetOptionsEnabled(true);
             // Keep the target and key available for another release attempt on close.
             toggleButton.Enabled = released;
+            if (!released) { transportBox.Enabled=false; testButton.Enabled=false; }
             statusLabel.Text = released ? status : "キー解放に失敗 • 対象アプリを確認してください";
         }
 
@@ -287,6 +350,21 @@ namespace PokaAntiAFK_WinForms
         {
             timer.Stop();
             if (!isRunning) return;
+            if (sessionOsc)
+            {
+                try
+                {
+                    // Clear any previous state before each new button press.
+                    osc.Forward(false);
+                    oscHeld=true;
+                    osc.Forward(true);
+                    releaseTimer.Interval=250;
+                    releaseTimer.Start();
+                }
+                catch (System.Net.Sockets.SocketException ex)
+                { StopRunning("OSC送信失敗 • " + ex.SocketErrorCode); }
+                return;
+            }
             if (!TargetExists()) { StopRunning("対象が閉じられたため停止しました"); return; }
             string[] keys = modeBox.SelectedItem?.ToString() == "WASD"
                 ? new[] { "W", "A", "S", "D" } : new[] { "E", "S", "D", "F" };
