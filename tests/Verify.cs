@@ -1,0 +1,64 @@
+using System;
+using System.Drawing;
+using System.Reflection;
+using System.Collections.Generic;
+using System.Windows.Forms;
+using PokaAntiAFK_WinForms;
+class Target : Form {
+    public int Downs, Ups;
+    public long UpFlags;
+    protected override void WndProc(ref Message m) {
+        if (m.Msg==0x100) Downs++;
+        if (m.Msg==0x101) { Ups++; UpFlags=m.LParam.ToInt64(); }
+        base.WndProc(ref m);
+    }
+}
+class Verify {
+    static object Field(Form1 f,string name) {return typeof(Form1).GetField(name,BindingFlags.Instance|BindingFlags.NonPublic).GetValue(f);}
+    static void Call(Form1 f,string name) { typeof(Form1).GetMethod(name,BindingFlags.Instance|BindingFlags.NonPublic).Invoke(f,new object[]{null,EventArgs.Empty}); }
+    static void Assert(bool ok,string label) {if(!ok)throw new Exception(label); Console.WriteLine("PASS: "+label);}
+    static void Pump() { for(int i=0;i<8;i++) Application.DoEvents(); }
+    static void Select(Form1 f,Target target) {
+        var combo=(ComboBox)Field(f,"windowComboBox");
+        var windows=(List<Tuple<IntPtr,string>>)Field(f,"windowHandles");
+        combo.Items.Clear(); windows.Clear();
+        windows.Add(Tuple.Create(target.Handle,"Poka verification target"));
+        combo.Items.Add("Poka verification target");combo.SelectedIndex=0;
+    }
+    [STAThread] static int Main(string[] args) {
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        using(var f=new Form1()) using(var target=new Target()) {
+            f.ShowInTaskbar=false; f.Opacity=0; f.Show(); Pump();
+            var h=f.Handle;
+            // Render only this application's controls; no desktop capture.
+            var combo=(ComboBox)Field(f,"windowComboBox");combo.Items.Clear();combo.Items.Add("送信先のウィンドウを選択してください");combo.SelectedIndex=0;
+            using(var bmp=new Bitmap(f.Width,f.Height)) {f.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(args[0]);}
+            combo.Items.Clear();
+            Call(f,"ToggleButton_Click");
+            Assert(!(bool)Field(f,"isRunning"),"No target cannot start");
+            Select(f,target);
+            ((CheckBox)Field(f,"holdTimeBox")).Checked=true;
+            Call(f,"ToggleButton_Click");
+            Assert(!combo.Enabled,"Target locked while running");
+            var clock=System.Diagnostics.Stopwatch.StartNew();
+            Call(f,"Timer_Tick");Pump();
+            Assert(clock.ElapsedMilliseconds<1000,"Long hold does not block UI");
+            Assert(target.Downs==1 && target.Ups==0,"Key down reaches only test target");
+            Call(f,"ToggleButton_Click");Pump();
+            Assert(target.Ups==1,"Stop releases held key immediately");
+            Assert((target.UpFlags & 0xC0000000L)==0xC0000000L,"Key up flags correct");
+            Assert(combo.Enabled && !(bool)Field(f,"isRunning"),"Stop restores controls");
+            Call(f,"ToggleButton_Click");Call(f,"Timer_Tick");Pump();
+            target.Dispose();Call(f,"Timer_Tick");
+            Assert(!(bool)Field(f,"isRunning"),"Closed target stops run");
+        }
+        using(var f=new Form1()) using(var target=new Target()) {
+            var h=f.Handle; Select(f,target);
+            Call(f,"ToggleButton_Click");Call(f,"Timer_Tick");Pump();
+            f.Close();Pump();
+            Assert(target.Ups==1,"Closing app releases held key");
+        }
+        return 0;
+    }
+}
